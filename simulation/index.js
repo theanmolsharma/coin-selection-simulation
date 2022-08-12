@@ -1,25 +1,22 @@
 'use strict';
 
 const assert = require('bsert');
-const TX = require('../lib/primitives/tx');
-const random = require('bcrypto/lib/random');
-const Address = require('../lib/primitives/address');
 const consensus = require('../lib/protocol/consensus');
 const FullNode = require('../lib/node/fullnode');
 const plugin = require('../lib/wallet/plugin');
 const {testdir, rimraf, forValue} = require('../test/util/common');
-const {wallet} = require('../lib/bcoin-browser');
 const Amount = require('../lib/btc/amount');
 const {getMinFee} = require('../lib/protocol/policy');
 
-const tiny = require('./json/scenarios/bustabit-2019-2020-tiny-hot-wallet.json');
+let data;
 
-const run = async () => {
+const run = async (useSelectEstimate) => {
   const prefix = testdir('coinselection');
   const node = new FullNode({
     prefix,
     network: 'regtest'
   });
+
   node.use(plugin);
   const {wdb} = node.plugins.walletdb;
   let miner, minerAddr;
@@ -48,36 +45,48 @@ const run = async () => {
   let feeMiner = 0;
 
   // start simulation
-  for (const scene of tiny) {
+  for (const scene of data) {
     let value = Amount.value(scene.value);
-    const rate = Amount.value(scene.rate);
+    let rate;
+    if (scene.rate)
+      rate = Amount.value(scene.rate);
+    else
+      rate = 5000;
+
     if (Math.abs(value) < 500)
       continue;
     if (value > 0) {
       const address = await alice.receiveAddress();
-      receive += value
+      receive += value;
+
       const tx = await miner.send({
         outputs: [{value, address}],
         rate,
-        useSelectEstimate: true
+        useSelectEstimate
       });
+
       const size = tx.getVirtualSize();
       feeMiner += getMinFee(size, rate);
     } else {
       const address = await miner.receiveAddress();
       value = -value;
-      sent += value
+      sent += value;
+
       const tx = await alice.send({
         outputs: [{value, address}],
         rate,
-        useSelectEstimate: true
+        useSelectEstimate
       });
+
       const size = tx.getVirtualSize();
       feeAlice += getMinFee(size, rate);
     }
+
     if (i % 100 === 0)
-      console.log(`Done ${i} of ${tiny.length}!!`);
-    await node.rpc.mineBlocks(1, minerAddr);
+      console.log(`Done ${i} of ${data.length}!!`);
+    if (i % 20)
+      await node.rpc.mineBlocks(1, minerAddr);
+
     i++;
   }
 
@@ -88,10 +97,27 @@ const run = async () => {
   console.log("Total fee by Miner:", feeMiner);
   console.log(await alice.getBalance());
 
-
   await node.close();
   await rimraf(prefix);
   consensus.COINBASE_MATURITY = actualCoinbaseMaturity;
 }
 
-run();
+
+(async () => {
+  assert(process.argv.length > 2, 'Please pass in simulation file');
+  data = require(`./json/${process.argv[2]}`);
+  console.log(`Starting simulation on ${process.argv[2]}`);
+  for (const useSelectEstimate of [true, false]) {
+    if (useSelectEstimate)
+      console.log('Running simulation on old selection')
+    else
+      console.log('Running simulation on new selection')
+    await run(useSelectEstimate);
+  }
+})().then(() => {
+  console.log('Simulation complete.');
+  process.exit(0);
+}).catch((err) => {
+  console.error(err.stack);
+  process.exit(1);
+});
